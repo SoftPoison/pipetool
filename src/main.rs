@@ -1,7 +1,8 @@
 use std::{
     collections::VecDeque,
     fmt::Display,
-    io::{Read, Stdin, Stdout, Write}, num::NonZeroUsize,
+    io::{Read, Stdin, Stdout, Write},
+    num::NonZeroUsize,
 };
 
 const BUFFER_SIZE: usize = 32;
@@ -317,6 +318,78 @@ impl Stream for Pass {
     }
 }
 
+pub struct GenerateByte {
+    target: Byte,
+}
+
+impl GenerateByte {
+    pub fn new(target: Byte) -> Box<Self> {
+        Box::new(Self { target })
+    }
+}
+
+impl Stream for GenerateByte {
+    fn size_hint(&self) -> Option<usize> {
+        None // we have no idea what the size of this output will be
+    }
+
+    fn type_hint(&self) -> PipeTypeHint {
+        PipeTypeHint::Byte
+    }
+
+    fn next(&mut self) -> Option<PipeType> {
+        Some(PipeType::Byte(self.target))
+    }
+}
+
+pub struct GenerateChar {
+    target: Char,
+}
+
+impl GenerateChar {
+    pub fn new(target: Char) -> Box<Self> {
+        Box::new(Self { target })
+    }
+}
+
+impl Stream for GenerateChar {
+    fn size_hint(&self) -> Option<usize> {
+        None // we have no idea what the size of this output will be
+    }
+
+    fn type_hint(&self) -> PipeTypeHint {
+        PipeTypeHint::Char
+    }
+
+    fn next(&mut self) -> Option<PipeType> {
+        Some(PipeType::Char(self.target))
+    }
+}
+
+pub struct GenerateNum {
+    target: Num,
+}
+
+impl GenerateNum {
+    pub fn new(target: Num) -> Box<Self> {
+        Box::new(Self { target })
+    }
+}
+
+impl Stream for GenerateNum {
+    fn size_hint(&self) -> Option<usize> {
+        None // we have no idea what the size of this output will be
+    }
+
+    fn type_hint(&self) -> PipeTypeHint {
+        PipeTypeHint::Num
+    }
+
+    fn next(&mut self) -> Option<PipeType> {
+        Some(PipeType::Num(self.target))
+    }
+}
+
 pub struct ToHex {
     input: Box<dyn Stream>,
     leftover: Option<char>,
@@ -575,31 +648,53 @@ impl Stream for BytesToChars {
 
 pub struct Fork {
     input: Box<dyn Stream>,
-    functions: Vec<StreamPipeline>,
+    num_outputs: NonZeroUsize,
+    buffers: Box<[VecDeque<PipeType>]>,
+}
+
+pub struct ForkOutput {
+    parent: Box<Fork>,
 }
 
 impl Fork {
-    pub fn new(input: Box<dyn Stream>, functions: Vec<StreamPipeline>) -> Box<Self> {
-        Box::new(Self { input, functions })
+    pub fn blah(input: Box<dyn Stream>, num_outputs: NonZeroUsize) -> Box<[ForkOutput]> {
+        let this = Box::new(Fork {
+            input,
+            num_outputs,
+            buffers: Box::new([VecDeque::new(); num_outputs]), // how tf do I do this
+        });
+
+        todo!()
     }
 }
 
-impl Stream for Fork {
-    fn size_hint(&self) -> Option<usize> {
-        self.input.size_hint()
-    }
+// pub struct Fork {
+//     input: Box<dyn Stream>,
+//     functions: Vec<StreamPipeline>,
+// }
 
-    fn type_hint(&self) -> PipeTypeHint {
-        PipeTypeHint::Multi
-    }
+// impl Fork {
+//     pub fn new(input: Box<dyn Stream>, functions: Vec<StreamPipeline>) -> Box<Self> {
+//         Box::new(Self { input, functions })
+//     }
+// }
 
-    fn next(&mut self) -> Option<PipeType> {
-        let x = self.input.next()?;
-        let results: Vec<_> = self.functions.iter().map(|f| f(x.clone())).collect();
+// impl Stream for Fork {
+//     fn size_hint(&self) -> Option<usize> {
+//         self.input.size_hint()
+//     }
 
-        Some(PipeType::Multi(results))
-    }
-}
+//     fn type_hint(&self) -> PipeTypeHint {
+//         PipeTypeHint::Multi
+//     }
+
+//     fn next(&mut self) -> Option<PipeType> {
+//         let x = self.input.next()?;
+//         let results: Vec<_> = self.functions.iter().map(|f| f(x.clone())).collect();
+
+//         Some(PipeType::Multi(results))
+//     }
+// }
 
 // groups items in bunches and spits out the bunches one at a time
 pub struct Group {
@@ -608,11 +703,8 @@ pub struct Group {
 }
 
 impl Group {
-    pub fn new (input: Box<dyn Stream>, size: NonZeroUsize) -> Box<Self> {
-        Box::new(Self {
-            input,
-            size,
-        })
+    pub fn new(input: Box<dyn Stream>, size: NonZeroUsize) -> Box<Self> {
+        Box::new(Self { input, size })
     }
 }
 
@@ -675,8 +767,9 @@ impl Stream for AlternatingMerge {
                 }
 
                 return None;
-            },
-        }.parallel();
+            }
+        }
+        .parallel();
 
         while !self.buffer.is_empty() {
             if let Some(x) = self.buffer.pop_front() {
@@ -762,10 +855,85 @@ impl Stream for SequentialMerge {
     }
 }
 
+pub struct Skip {
+    input: Box<dyn Stream>,
+    num: usize,
+    curr: usize,
+}
+
+impl Skip {
+    pub fn new(input: Box<dyn Stream>, num: usize) -> Box<Self> {
+        Box::new(Self {
+            input,
+            num,
+            curr: 0,
+        })
+    }
+}
+
+impl Stream for Skip {
+    fn size_hint(&self) -> Option<usize> {
+        self.input.size_hint().map(|n| n.saturating_sub(self.num))
+    }
+
+    fn type_hint(&self) -> PipeTypeHint {
+        self.input.type_hint()
+    }
+
+    fn next(&mut self) -> Option<PipeType> {
+        while self.curr < self.num {
+            self.curr += 1;
+            self.input.next()?;
+        }
+
+        self.input.next()
+    }
+}
+
+pub struct Take {
+    input: Box<dyn Stream>,
+    num: usize,
+    curr: usize,
+}
+
+impl Take {
+    pub fn new(input: Box<dyn Stream>, num: usize) -> Box<Self> {
+        Box::new(Self {
+            input,
+            num,
+            curr: 0,
+        })
+    }
+}
+
+impl Stream for Take {
+    fn size_hint(&self) -> Option<usize> {
+        self.input.size_hint().map(|n| n.min(self.num))
+    }
+
+    fn type_hint(&self) -> PipeTypeHint {
+        self.input.type_hint()
+    }
+
+    fn next(&mut self) -> Option<PipeType> {
+        if self.curr >= self.num {
+            return None;
+        }
+
+        self.curr += 1;
+        self.input.next()
+    }
+}
+
 fn main() {
     let step = In::new();
+
+    // let step = Fork::new(step, vec![
+    //     |x| {},
+    //     |x| {},
+    // ]);
     // let step = Fork::new(step, vec![])
-    let step = ToBase64::new(step);
+    // let step = ToBase64::new(step);
     let mut output = Out::new(step);
 
     while output.next().is_some() {}
